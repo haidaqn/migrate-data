@@ -1,52 +1,94 @@
-const mysql = require('mysql2/promise');
 const { MongoClient } = require('mongodb');
+const sql = require('mssql');
 const { performance } = require('perf_hooks');
-const { v7: uuidv7 } = require('uuid'); 
+const { v7: uuidv7 } = require('uuid');
 
 const mongoUrl = 'mongodb://localhost:27017';
 const dbName = 'qlmt-test';
 const collectionName = 'sensordatas';
-const BATCH_SIZE = 1000; 
+const BATCH_SIZE = 1000;
 
-async function connectMySQL() {
-  return await mysql.createConnection({
-    host: 'localhost',
-    user: 'root',
-    password: 'Haidang2003x@',
-    database: 'qlmt_test',
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0,
-    connectTimeout: 60000,
-    maxPreparedStatements: 100,
-    maxPacketSize: 16777216
-  });
-}
+const sqlConfig = {
+    server: 'localhost',
+    port: 1433,
+    database: 'qlmt_test', 
+    user: 'sa',
+    password: 'StrongPassword123!', 
+    options: {
+        encrypt: false,
+        trustServerCertificate: true,
+        enableArithAbort: true
+    }
+};
 
-async function setupDatabase(connection) {
+
+async function connectSQLServer() {
+    try {
+      console.log('🔄 Thử kết nối với SQL Server...');
+      
+      // Thử kết nối đến master database trước
+      const masterConfig = {
+        server: sqlConfig.server,
+        port: sqlConfig.port,
+        user: sqlConfig.user,
+        password: sqlConfig.password,
+        database: 'master', // Kết nối đến master database trước
+        options: {
+          encrypt: false,
+          trustServerCertificate: true,
+          enableArithAbort: true
+        }
+      };
+      
+      await sql.connect(masterConfig);
+      console.log('✅ Kết nối đến SQL Server thành công (master database)');
+      
+      return sql;
+    } catch (err) {
+      console.error('❌ Lỗi kết nối SQL Server:', err);
+      throw err;
+    }
+  }
+
+
+async function setupDatabase() {
   try {
-    await connection.query(`CREATE DATABASE IF NOT EXISTS qlmt_test`);
-    await connection.query(`USE qlmt_test`);
+    // Tạo database nếu chưa tồn tại
+    await sql.query`
+      IF NOT EXISTS (SELECT * FROM sys.databases WHERE name = 'qlmt_test')
+      BEGIN
+        CREATE DATABASE qlmt_test;
+      END
+    `;
     
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS sensorsdata (
-        _id VARCHAR(36) PRIMARY KEY,
-        sensor VARCHAR(255),
-        zone VARCHAR(255),
-        value INT,
-        timeReceived DATETIME NULL,
-        minute INT,
-        hour INT,
-        day INT,
-        month INT,
-        year INT,
-        createdAt DATETIME NULL,
-        updatedAt DATETIME NULL,
-        INDEX idx_sensor (sensor),
-        INDEX idx_zone (zone),
-        INDEX idx_time (year, month, day, hour, minute)
-      )
-    `);
+    // Chuyển sang sử dụng database qlmt_test
+    await sql.query`USE qlmt_test`;
+    
+    // Tạo bảng nếu chưa tồn tại
+    await sql.query`
+      IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'sensorsdata')
+      BEGIN
+        CREATE TABLE sensorsdata (
+          _id VARCHAR(36) PRIMARY KEY,
+          sensor VARCHAR(255),
+          zone VARCHAR(255),
+          value INT,
+          timeReceived DATETIME NULL,
+          minute INT,
+          hour INT,
+          day INT,
+          month INT,
+          year INT,
+          createdAt DATETIME NULL,
+          updatedAt DATETIME NULL
+        );
+        
+        CREATE INDEX idx_sensor ON sensorsdata(sensor);
+        CREATE INDEX idx_zone ON sensorsdata(zone);
+        CREATE INDEX idx_time ON sensorsdata(year, month, day, hour, minute);
+      END
+    `;
+    
     console.log('✅ Đã thiết lập database và table');
   } catch (error) {
     console.error('❌ Lỗi khi thiết lập database:', error);
@@ -72,22 +114,22 @@ function transformMongoItem(item) {
   };
 }
 
-async function migrateData(connection) {
+async function migrateData() {
   const startTime = performance.now();
   let totalProcessed = 0;
   let totalBatches = 0;
   
   try {
-    const client = new MongoClient(mongoUrl, { 
+    const mongoClient = new MongoClient(mongoUrl, { 
       useNewUrlParser: true, 
       useUnifiedTopology: true,
       maxPoolSize: 10
     });
     
-    await client.connect();
+    await mongoClient.connect();
     console.log('✅ Kết nối MongoDB thành công');
     
-    const db = client.db(dbName);
+    const db = mongoClient.db(dbName);
     const collection = db.collection(collectionName);
     
     const totalDocuments = await collection.countDocuments();
@@ -103,7 +145,7 @@ async function migrateData(connection) {
       
       // Insert theo batch khi đủ kích thước
       if (batch.length >= BATCH_SIZE) {
-        await insertBatch(connection, batch);
+        await insertBatch(batch);
         totalProcessed += batch.length;
         totalBatches++;
         
@@ -116,46 +158,88 @@ async function migrateData(connection) {
     }
     
     if (batch.length > 0) {
-      await insertBatch(connection, batch);
+      await insertBatch(batch);
       totalProcessed += batch.length;
       totalBatches++;
     }
     
     const totalTime = ((performance.now() - startTime) / 1000).toFixed(2);
     console.log(`🎉 Migration hoàn tất! Đã xử lý ${totalProcessed} dòng trong ${totalTime} giây (${totalBatches} batches)`);
-    await client.close();
+    await mongoClient.close();
   } catch (error) {
     console.error('❌ Lỗi khi migrate dữ liệu:', error);
     throw error;
   }
 }
 
-async function insertBatch(connection, batch) {
+async function insertBatch(batch) {
   try {
-    const placeholders = batch.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?)').join(',');
-    const flatValues = batch.flatMap(item => [
-      item._id, 
-      item.sensor, 
-      item.zone, 
-      item.value, 
-      item.timeReceived, 
-      item.minute, 
-      item.hour, 
-      item.day, 
-      item.month, 
-      item.year, 
-      item.createdAt, 
-      item.updatedAt
-    ]);
+    // Sử dụng đối tượng Transaction để đảm bảo tính toàn vẹn
+    const transaction = new sql.Transaction();
     
-    const query = `INSERT INTO sensorsdata (_id, sensor, zone, value, timeReceived, minute, hour, day, month, year, createdAt, updatedAt) 
-                  VALUES ${placeholders} 
-                  ON DUPLICATE KEY UPDATE 
-                  sensor=VALUES(sensor), 
-                  zone=VALUES(zone), 
-                  value=VALUES(value)`;
-                  
-    await connection.query(query, flatValues);
+    await new Promise((resolve, reject) => {
+      transaction.begin(err => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        
+        // Tạo request mới trong transaction
+        const request = new sql.Request(transaction);
+        
+        // Tạo table variable
+        const table = new sql.Table('sensorsdata');
+        table.create = false;
+        table.columns.add('_id', sql.VarChar(36), { nullable: false });
+        table.columns.add('sensor', sql.VarChar(255), { nullable: true });
+        table.columns.add('zone', sql.VarChar(255), { nullable: true });
+        table.columns.add('value', sql.Int, { nullable: true });
+        table.columns.add('timeReceived', sql.DateTime, { nullable: true });
+        table.columns.add('minute', sql.Int, { nullable: true });
+        table.columns.add('hour', sql.Int, { nullable: true });
+        table.columns.add('day', sql.Int, { nullable: true });
+        table.columns.add('month', sql.Int, { nullable: true });
+        table.columns.add('year', sql.Int, { nullable: true });
+        table.columns.add('createdAt', sql.DateTime, { nullable: true });
+        table.columns.add('updatedAt', sql.DateTime, { nullable: true });
+        
+        // Thêm dữ liệu vào bảng tạm
+        batch.forEach(item => {
+          table.rows.add(
+            item._id,
+            item.sensor,
+            item.zone,
+            item.value,
+            item.timeReceived,
+            item.minute,
+            item.hour,
+            item.day,
+            item.month,
+            item.year,
+            item.createdAt,
+            item.updatedAt
+          );
+        });
+        
+        // Thực hiện bulk insert
+        request.bulk(table, (err, result) => {
+          if (err) {
+            transaction.rollback(rollbackErr => {
+              reject(err); // Reject với lỗi gốc
+            });
+          } else {
+            transaction.commit(commitErr => {
+              if (commitErr) {
+                reject(commitErr);
+              } else {
+                resolve(result);
+              }
+            });
+          }
+        });
+      });
+    });
+    
   } catch (error) {
     console.error(`❌ Lỗi khi insert batch (${batch.length} dòng):`, error.message);
     
@@ -167,8 +251,8 @@ async function insertBatch(connection, batch) {
       const secondHalf = batch.slice(halfSize);
       
       try {
-        await insertBatch(connection, firstHalf);
-        await insertBatch(connection, secondHalf);
+        await insertBatch(firstHalf);
+        await insertBatch(secondHalf);
         console.log(`✅ Đã xử lý thành công sau khi chia nhỏ`);
       } catch (subError) {
         console.error(`❌ Không thể xử lý sau khi chia nhỏ:`, subError.message);
@@ -180,19 +264,79 @@ async function insertBatch(connection, batch) {
   }
 }
 
+// Thay thế hàm setupMergeOperation để hỗ trợ tốt hơn với SQL Server cơ bản
+async function setupMergeOperation() {
+  try {
+    // Kiểm tra version của SQL Server và điều chỉnh tính năng hỗ trợ
+    const versionResult = await sql.query`SELECT @@VERSION as version`;
+    const sqlVersion = versionResult.recordset[0].version;
+    console.log(`📊 SQL Server Version: ${sqlVersion}`);
+    
+    // Nếu SQL Server hỗ trợ MERGE statement (SQL Server 2008+)
+    if (sqlVersion.includes('SQL Server')) {
+      // Tạo stored procedure để xử lý upsert
+      await sql.query`
+        IF NOT EXISTS (SELECT * FROM sys.procedures WHERE name = 'UpsertSensorData')
+        BEGIN
+          EXEC('
+            CREATE PROCEDURE UpsertSensorData
+              @id VARCHAR(36),
+              @sensor VARCHAR(255),
+              @zone VARCHAR(255), 
+              @value INT,
+              @timeReceived DATETIME,
+              @minute INT,
+              @hour INT,
+              @day INT,
+              @month INT,
+              @year INT,
+              @createdAt DATETIME,
+              @updatedAt DATETIME
+            AS
+            BEGIN
+              SET NOCOUNT ON;
+              
+              IF EXISTS (SELECT 1 FROM sensorsdata WHERE _id = @id)
+              BEGIN
+                UPDATE sensorsdata SET
+                  sensor = @sensor,
+                  zone = @zone,
+                  value = @value
+                WHERE _id = @id
+              END
+              ELSE
+              BEGIN
+                INSERT INTO sensorsdata (_id, sensor, zone, value, timeReceived, minute, hour, day, month, year, createdAt, updatedAt)
+                VALUES (@id, @sensor, @zone, @value, @timeReceived, @minute, @hour, @day, @month, @year, @createdAt, @updatedAt)
+              END
+            END
+          ')
+        END
+      `;
+      
+      console.log('✅ Đã tạo stored procedure cho upsert');
+    } else {
+      console.log('⚠️ SQL Server có thể không hỗ trợ đầy đủ MERGE, sẽ sử dụng insert trực tiếp');
+    }
+  } catch (error) {
+    console.error('⚠️ Lỗi khi tạo stored procedure, tiếp tục với insert trực tiếp:', error);
+    // Không throw error để tiếp tục quá trình
+  }
+}
+
 (async () => {
-  let connection;
   try {
     console.log('🚀 Bắt đầu quá trình migrate...');
-    connection = await connectMySQL();
-    await setupDatabase(connection);
-    await migrateData(connection);
+    await connectSQLServer();
+    await setupDatabase();
+    await setupMergeOperation();
+    await migrateData();
   } catch (error) {
     console.error('❌ Lỗi chính:', error);
   } finally {
-    if (connection) {
-      await connection.end();
-      console.log('👋 Đã đóng kết nối MySQL');
+    if (sql.connected) {
+      await sql.close();
+      console.log('👋 Đã đóng kết nối SQL Server');
     }
   }
 })();
