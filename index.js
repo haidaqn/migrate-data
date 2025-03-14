@@ -4,7 +4,7 @@ const { performance } = require('perf_hooks');
 const { v7: uuidv7 } = require('uuid');
 
 const mongoUrl = 'mongodb://localhost:27017';
-const dbName = 'qlmt-test';
+const dbName = 'ids_sensor';
 const collectionName = 'sensordatas';
 const BATCH_SIZE = 1000;
 
