@@ -474,9 +474,9 @@ async function insertBatch(batch, tableName) {
   const transaction = new sql.Transaction(pool);
   try {
     await transaction.begin();
-    const request = new sql.Request(transaction);
 
     for (const item of batch) {
+      const request = new sql.Request(transaction); // Create a new request for each query
       const columns = Object.keys(item).map(col => `[${col}]`).join(', ');
       const params = Object.keys(item).map((_, i) => `@p${i}`).join(', ');
       const query = `INSERT INTO ${tableName} (${columns}) VALUES (${params})`;
