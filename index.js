@@ -3,22 +3,7 @@ const sql = require('mssql');
 const { performance } = require('perf_hooks');
 const { v7: uuidv7 } = require('uuid');
 
-const mongoUrl = 'mongodb://localhost:27017';
-const dbName = '';
-const BATCH_SIZE = 1000;
 
-const sqlConfig = {
-    server: 'localhost',
-    port: 1433,
-    database: 'qlmt_test', 
-    user: 'sa',
-    password: 'StrongPassword123!', 
-    options: {
-        encrypt: false,
-        trustServerCertificate: true,
-        enableArithAbort: true
-    }
-};
 
 const migrationOrder = [
   { collection: 'accounts', table: 'accounts' },
@@ -70,17 +55,10 @@ async function connectSQLServer() {
 
 async function setupDatabase() {
   try {
-    await sql.query`
-      IF NOT EXISTS (SELECT * FROM sys.databases WHERE name = 'qlmt_test')
-      BEGIN
-        CREATE DATABASE qlmt_test;
-      END
-    `;
-    
     await sql.query`USE qlmt_test`;
-    
+
     await createTables();
-    
+
     console.log('✅ Database and tables setup complete');
   } catch (error) {
     console.error('❌ Error setting up database:', error);
@@ -592,17 +570,19 @@ async function insertBatch(batch, tableName) {
     const transaction = new sql.Transaction();
     await transaction.begin();
 
-    const request = new sql.Request(transaction);
     for (const item of batch) {
+      const request = new sql.Request(transaction);
       const columns = Object.keys(item).map((col) => `[${col}]`).join(', ');
       const values = Object.keys(item)
-        .map((col) => `@${col}`)
+        .map((col, index) => `@param${index}`)
         .join(', ');
 
       const query = `INSERT INTO ${tableName} (${columns}) VALUES (${values})`;
-      for (const [key, value] of Object.entries(item)) {
-        request.input(key, value);
-      }
+
+      Object.keys(item).forEach((col, index) => {
+        request.input(`param${index}`, item[col]);
+      });
+
       await request.query(query);
     }
 
