@@ -100,7 +100,7 @@ async function createTables() {
         password VARCHAR(255) NULL,
         phoneNumber VARCHAR(50) NULL,
         role VARCHAR(50) NULL,
-        delete BIT DEFAULT 0,
+        [delete] BIT DEFAULT 0,
         refreshToken VARCHAR(MAX) NULL,
         createdAt DATETIME NULL,
         updatedAt DATETIME NULL
