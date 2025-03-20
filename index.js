@@ -4,7 +4,7 @@ const { performance } = require('perf_hooks');
 const { v7: uuidv7 } = require('uuid');
 
 
-const BATCH_SIZE = 1000; // Kích thước batch tối ưu
+
 
 const migrationOrder = [
   { collection: 'accounts', table: 'accounts' },
@@ -21,6 +21,7 @@ const migrationOrder = [
   { collection: 'permissions', table: 'permissions' },
   { collection: 'cxviewdatas', table: 'cxviewdatas' },
   { collection: 'imagebinaries', table: 'imagebinaries' },
+
   { collection: 'countings', table: 'countings' },
 ];
 
@@ -438,7 +439,7 @@ async function migrateCollection(collection, table) {
       return;
     }
 
-    const cursor = mongoCollection.find({}).batchSize(BATCH_SIZE);
+    const cursor = mongoCollection.find({}).batchSize(1000);
     let batch = [];
 
     while (await cursor.hasNext()) {
@@ -446,7 +447,7 @@ async function migrateCollection(collection, table) {
       const transformedItem = transformDocument(item, collection);
       batch.push(transformedItem);
 
-      if (batch.length >= BATCH_SIZE) {
+      if (batch.length >= 1000) {
         await insertBatch(batch, table);
         totalProcessed += batch.length;
         console.log(`⏱️ Processed ${totalProcessed}/${totalDocuments} in ${collection}`);
