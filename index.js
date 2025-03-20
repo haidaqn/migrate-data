@@ -4,24 +4,24 @@ const { performance } = require('perf_hooks');
 const { v7: uuidv7 } = require('uuid');
 
 
+const BATCH_SIZE = 1000; // Kích thước batch tối ưu
 
 const migrationOrder = [
   { collection: 'accounts', table: 'accounts' },
+  { collection: 'logs', table: 'logs' },
   { collection: 'companies', table: 'companies' },
+  { collection: 'zlans', table: 'zlans' },
+  { collection: 'warnings', table: 'warnings' },
+  { collection: 'membercompanies', table: 'membercompanies' },
+  { collection: 'zones', table: 'zones' },
+  { collection: 'mappings', table: 'mappings' },
   { collection: 'devices', table: 'devices' },
   { collection: 'sensors', table: 'sensors' },
-  { collection: 'zones', table: 'zones' },
-  { collection: 'sensor_zones', table: 'sensor_zones' },
-  { collection: 'zlans', table: 'zlans' },
-  { collection: 'memberscompany', table: 'memberscompany' },
+  { collection: 'sensorzones', table: 'sensorzones' },
   { collection: 'permissions', table: 'permissions' },
-  { collection: 'warnings', table: 'warnings' },
-  { collection: 'logs', table: 'logs' },
-  { collection: 'mappings', table: 'mappings' },
-  { collection: 'imagebinaries', table: 'imagebinaries' },
   { collection: 'cxviewdatas', table: 'cxviewdatas' },
+  { collection: 'imagebinaries', table: 'imagebinaries' },
   { collection: 'countings', table: 'countings' },
-  { collection: 'sensordatas', table: 'sensordatas' }
 ];
 
 const idMapping = {};
@@ -29,23 +29,8 @@ const idMapping = {};
 async function connectSQLServer() {
   try {
     console.log('🔄 Connecting to SQL Server...');
-    
-    const masterConfig = {
-      server: sqlConfig.server,
-      port: sqlConfig.port,
-      user: sqlConfig.user,
-      password: sqlConfig.password,
-      database: 'master',
-      options: {
-        encrypt: false,
-        trustServerCertificate: true,
-        enableArithAbort: true
-      }
-    };
-    
-    await sql.connect(masterConfig);
-    console.log('✅ Connected to SQL Server (master database)');
-    
+    await sql.connect(sqlConfig);
+    console.log('✅ Connected to SQL Server');
     return sql;
   } catch (err) {
     console.error('❌ SQL Server connection error:', err);
@@ -55,10 +40,7 @@ async function connectSQLServer() {
 
 async function setupDatabase() {
   try {
-    await sql.query`USE qlmt_test`;
-
     await createTables();
-
     console.log('✅ Database and tables setup complete');
   } catch (error) {
     console.error('❌ Error setting up database:', error);
@@ -141,9 +123,9 @@ async function createTables() {
     END
 
     -- SensorZones table
-    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'sensor_zones')
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'sensorzones')
     BEGIN
-      CREATE TABLE sensor_zones (
+      CREATE TABLE sensorzones (
         id VARCHAR(36) PRIMARY KEY,
         sensor VARCHAR(36) NULL,
         zone VARCHAR(36) NULL,
@@ -165,10 +147,10 @@ async function createTables() {
       );
     END
 
-    -- MembersCompany table
-    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'memberscompany')
+    -- membercompanies table
+    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'membercompanies')
     BEGIN
-      CREATE TABLE memberscompany (
+      CREATE TABLE membercompanies (
         id VARCHAR(36) PRIMARY KEY,
         company VARCHAR(36) NULL,
         account VARCHAR(36) NULL,
@@ -237,7 +219,7 @@ async function createTables() {
     BEGIN
       CREATE TABLE imagebinaries (
         id VARCHAR(36) PRIMARY KEY,
-        imageBinary TEXT NULL, 
+        imageBinary TEXT NULL,
         createdAt DATETIME NULL,
         updatedAt DATETIME NULL
       );
@@ -282,221 +264,154 @@ async function createTables() {
       );
     END
 
-    -- SensorData table
-    IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'sensordatas')
-    BEGIN
-      CREATE TABLE sensordatas (
-        id VARCHAR(36) PRIMARY KEY,
-        sensor VARCHAR(255) NULL,
-        zone VARCHAR(255) NULL,
-        value INT NULL,
-        timeReceived DATETIME NULL,
-        minute INT NULL,
-        hour INT NULL,
-        day INT NULL,
-        month INT NULL,
-        year INT NULL,
-        createdAt DATETIME NULL,
-        updatedAt DATETIME NULL
-      );
-      
-      CREATE INDEX idx_sensor ON sensordatas(sensor);
-      CREATE INDEX idx_zone ON sensordatas(zone);
-      CREATE INDEX idx_time ON sensordatas(year, month, day, hour, minute);
-    END
+  
   `;
-}
-
-function transformObjectId(item) {
-  if (item._id) {
-    if (item._id.$oid) {
-      return item._id.$oid;
-    } else if (typeof item._id === 'object' && item._id.toString) {
-      return item._id.toString();
-    }
-    return item._id;
-  }
-  return uuidv7(); 
 }
 
 function transformDate(date) {
   if (!date) return null;
-  
-  if (date.$date) {
-    return new Date(date.$date);
-  } else if (typeof date === 'string') {
-    return new Date(date);
-  } else if (date instanceof Date) {
-    return date;
-  }
+  if (date.$date) return new Date(date.$date);
+  if (typeof date === 'string' || date instanceof Date) return new Date(date);
   return null;
 }
 
 function transformDocument(item, collectionName) {
-  const originalId = transformObjectId(item);
   const newId = uuidv7();
+  const originalId = item._id ? (item._id.$oid || item._id.toString()) : uuidv7();
   idMapping[`${collectionName}:${originalId}`] = newId;
-  
+
   const transformed = {
     id: newId,
     createdAt: transformDate(item.createdAt),
-    updatedAt: transformDate(item.updatedAt)
+    updatedAt: transformDate(item.updatedAt),
   };
-  
+
   switch (collectionName) {
     case 'accounts':
       return {
         ...transformed,
         email: item.email || '',
-        name: item.name || '',
-        password: item.password || '',
-        phoneNumber: item.phoneNumber || '',
+        name: item.name || null,
+        password: item.password || null,
+        phoneNumber: item.phoneNumber || null,
         role: item.role || 'USER',
         delete: item.delete || false,
-        refreshToken: item.refreshToken || null
+        refreshToken: item.refreshToken || null,
       };
-      
     case 'companies':
       return {
         ...transformed,
         name: item.name || '',
-        account: item.account ? idMapping[`accounts:${transformObjectId(item.account)}`] || null : null,
-        logo: item.logo || ''
+        account: item.account ? idMapping[`accounts:${item.account.$oid || item.account.toString()}`] || uuidv7() : null,
+        logo: item.logo || null,
       };
-      
     case 'devices':
       return {
         ...transformed,
         name: item.name || '',
-        company: item.company ? idMapping[`companies:${transformObjectId(item.company)}`] || null : null,
-        type: item.type || 'SENSOR'
+        company: item.company ? idMapping[`companies:${item.company.$oid || item.company.toString()}`] || uuidv7() : null,
+        type: item.type || 'SENSOR',
       };
-      
     case 'sensors':
       return {
         ...transformed,
-        hexCode: item.hexCode || '',
-        sensorType: item.sensorType || '',
-        unit: item.unit || '',
-        factor: item.factor || '',
-        deviceId: item.deviceId || '',
-        device: item.device ? idMapping[`devices:${transformObjectId(item.device)}`] || null : null
+        hexCode: item.hexCode || null,
+        sensorType: item.sensorType || null,
+        unit: item.unit || null,
+        factor: item.factor || null,
+        deviceId: item.deviceId || null,
+        device: item.device ? idMapping[`devices:${item.device.$oid || item.device.toString()}`] || uuidv7() : null,
       };
-      
     case 'zones':
       return {
         ...transformed,
         name: item.name || '',
-        company: item.company ? idMapping[`companies:${transformObjectId(item.company)}`] || null : null,
-        address: item.address || 'Viet Nam'
+        company: item.company ? idMapping[`companies:${item.company.$oid || item.company.toString()}`] || uuidv7() : null,
+        address: item.address || 'Viet Nam',
       };
-      
-    case 'sensor_zones':
+    case 'sensorzones':
       return {
         ...transformed,
-        sensor: item.sensor ? idMapping[`sensors:${transformObjectId(item.sensor)}`] || null : null,
-        zone: item.zone ? idMapping[`zones:${transformObjectId(item.zone)}`] || null : null
+        sensor: item.sensor ? idMapping[`sensors:${item.sensor.$oid || item.sensor.toString()}`] || uuidv7() : null,
+        zone: item.zone ? idMapping[`zones:${item.zone.$oid || item.zone.toString()}`] || uuidv7() : null,
       };
-      
     case 'zlans':
       return {
         ...transformed,
         ip: item.ip || '',
-        port: item.port || '',
-        company: item.company ? idMapping[`companies:${transformObjectId(item.company)}`] || null : null
+        port: item.port || null,
+        company: item.company ? idMapping[`companies:${item.company.$oid || item.company.toString()}`] || uuidv7() : null,
       };
-      
-    case 'memberscompany':
+    case 'membercompanies':
       return {
         ...transformed,
-        company: item.company ? idMapping[`companies:${transformObjectId(item.company)}`] || null : null,
-        account: item.account ? idMapping[`accounts:${transformObjectId(item.account)}`] || null : null
+        company: item.company ? idMapping[`companies:${item.company.$oid || item.company.toString()}`] || uuidv7() : null,
+        account: item.account ? idMapping[`accounts:${item.account.$oid || item.account.toString()}`] || uuidv7() : null,
       };
-      
     case 'permissions':
       return {
         ...transformed,
-        zoneID: item.zoneID ? idMapping[`zones:${transformObjectId(item.zoneID)}`] || null : null,
-        account: item.account ? idMapping[`accounts:${transformObjectId(item.account)}`] || null : null,
+        zoneID: item.zoneID ? idMapping[`zones:${item.zoneID.$oid || item.zoneID.toString()}`] || uuidv7() : null,
+        account: item.account ? idMapping[`accounts:${item.account.$oid || item.account.toString()}`] || uuidv7() : null,
         zone: item.zone || 'NULL',
-        sensor: item.sensor || 'NULL'
+        sensor: item.sensor || 'NULL',
       };
-      
     case 'warnings':
       return {
         ...transformed,
-        sensorType: item.sensorType || '',
-        value: item.value || '',
-        color: item.color || 'DEFAULT'
+        sensorType: item.sensorType || null,
+        value: item.value || null,
+        color: item.color || 'DEFAULT',
       };
-      
     case 'logs':
       return {
         ...transformed,
         type: item.type || '',
         action: item.action || '',
-        description: item.description || '',
-        status: item.status || '',
-        dataOld: item.dataOld || '',
-        createBy: item.createBy ? idMapping[`accounts:${transformObjectId(item.createBy)}`] || null : null
+        description: item.description || null,
+        status: item.status || null,
+        dataOld: item.dataOld || null,
+        createBy: item.createBy ? idMapping[`accounts:${item.createBy.$oid || item.createBy.toString()}`] || uuidv7() : null,
       };
-      
     case 'mappings':
       return {
         ...transformed,
-        company: item.company ? idMapping[`companies:${transformObjectId(item.company)}`] || null : null,
-        companyCode: item.companyCode || ''
+        company: item.company ? idMapping[`companies:${item.company.$oid || item.company.toString()}`] || uuidv7() : null,
+        companyCode: item.companyCode || '',
       };
-      
     case 'imagebinaries':
       return {
         ...transformed,
-        imageBinary: item.imageBinary || null
+        imageBinary: item.imageBinary || null,
       };
-      
     case 'cxviewdatas':
       return {
         ...transformed,
-        idCXView: item.idCXView || '',
-        timestamp: item.timestamp || 0,
-        image: item.image ? idMapping[`imagebinaries:${transformObjectId(item.image)}`] || null : null,
-        groupID: item.groupID || '',
-        groupName: item.groupName || '',
-        isSatisfyingFace: item.isSatisfyingFace || false,
-        cameraID: item.cameraID || '',
-        cameraName: item.cameraName || '',
-        name: item.name || '',
+        idCXView: item.idCXView || null,
+        timestamp: item.timestamp || null,
+        image: item.image ? idMapping[`imagebinaries:${item.image.$oid || item.image.toString()}`] || uuidv7() : null,
+        groupID: item.groupID || null,
+        groupName: item.groupName || null,
+        isSatisfyingFace: item.isSatisfyingFace || null,
+        cameraID: item.cameraID || null,
+        cameraName: item.cameraName || null,
+        name: item.name || null,
         gender: item.gender || 'unknown',
-        customerType: item.customerType || '',
-        telephone: item.telephone || ''
+        customerType: item.customerType || null,
+        telephone: item.telephone || null,
       };
-      
     case 'countings':
       return {
         ...transformed,
-        timestamp: item.timestamp || 0,
-        groupID: item.groupID || '',
-        groupName: item.groupName || '',
-        cameraID: item.cameraID || '',
-        cameraName: item.cameraName || '',
-        age: item.age || '',
-        gender: item.gender || ''
+        timestamp: item.timestamp || null,
+        groupID: item.groupID || null,
+        groupName: item.groupName || null,
+        cameraID: item.cameraID || null,
+        cameraName: item.cameraName || null,
+        age: item.age || null,
+        gender: item.gender || null,
       };
-      
-    case 'sensordatas':
-      return {
-        ...transformed,
-        sensor: item.sensor || '',
-        zone: item.zone || '',
-        value: item.value || 0,
-        timeReceived: transformDate(item.timeReceived),
-        minute: item.minute || 0,
-        hour: item.hour || 0,
-        day: item.day || 0,
-        month: item.month || 0,
-        year: item.year || 0
-      };
-      
+    
     default:
       return transformed;
   }
@@ -505,59 +420,47 @@ function transformDocument(item, collectionName) {
 async function migrateCollection(collection, table) {
   const startTime = performance.now();
   let totalProcessed = 0;
-  let totalBatches = 0;
-  
+
   try {
-    const mongoClient = new MongoClient(mongoUrl, { 
-      useNewUrlParser: true, 
-      useUnifiedTopology: true,
-      maxPoolSize: 10
-    });
-    
+    const mongoClient = new MongoClient(mongoUrl);
     await mongoClient.connect();
     console.log(`✅ Connected to MongoDB for ${collection}`);
-    
+
     const db = mongoClient.db(dbName);
     const mongoCollection = db.collection(collection);
-    
+
     const totalDocuments = await mongoCollection.countDocuments();
     console.log(`🔍 Total documents to migrate in ${collection}: ${totalDocuments}`);
-    
+
     if (totalDocuments === 0) {
       console.log(`⚠️ No documents found in ${collection}, skipping...`);
       await mongoClient.close();
       return;
     }
-    
+
     const cursor = mongoCollection.find({}).batchSize(BATCH_SIZE);
     let batch = [];
-    
+
     while (await cursor.hasNext()) {
       const item = await cursor.next();
       const transformedItem = transformDocument(item, collection);
       batch.push(transformedItem);
-      
+
       if (batch.length >= BATCH_SIZE) {
         await insertBatch(batch, table);
         totalProcessed += batch.length;
-        totalBatches++;
-        
-        const progress = (totalProcessed / totalDocuments * 100).toFixed(2);
-        const elapsedTime = ((performance.now() - startTime) / 1000).toFixed(2);
-        console.log(`⏱️ ${progress}% complete (${totalProcessed}/${totalDocuments}) - ${elapsedTime}s`);
-        
+        console.log(`⏱️ Processed ${totalProcessed}/${totalDocuments} in ${collection}`);
         batch = [];
       }
     }
-    
+
     if (batch.length > 0) {
       await insertBatch(batch, table);
       totalProcessed += batch.length;
-      totalBatches++;
     }
-    
+
     const totalTime = ((performance.now() - startTime) / 1000).toFixed(2);
-    console.log(`🎉 Migration of ${collection} complete! Processed ${totalProcessed} documents in ${totalTime} seconds (${totalBatches} batches)`);
+    console.log(`🎉 Migration of ${collection} complete! Processed ${totalProcessed} documents in ${totalTime}s`);
     await mongoClient.close();
   } catch (error) {
     console.error(`❌ Error migrating ${collection}:`, error);
@@ -566,42 +469,39 @@ async function migrateCollection(collection, table) {
 }
 
 async function insertBatch(batch, tableName) {
+  const pool = await sql.connect(sqlConfig);
+  const transaction = new sql.Transaction(pool);
   try {
-    const transaction = new sql.Transaction();
     await transaction.begin();
+    const request = new sql.Request(transaction);
 
     for (const item of batch) {
-      const request = new sql.Request(transaction);
-      const columns = Object.keys(item).map((col) => `[${col}]`).join(', ');
-      const values = Object.keys(item)
-        .map((col, index) => `@param${index}`)
-        .join(', ');
+      const columns = Object.keys(item).map(col => `[${col}]`).join(', ');
+      const params = Object.keys(item).map((_, i) => `@p${i}`).join(', ');
+      const query = `INSERT INTO ${tableName} (${columns}) VALUES (${params})`;
 
-      const query = `INSERT INTO ${tableName} (${columns}) VALUES (${values})`;
-
-      Object.keys(item).forEach((col, index) => {
-        request.input(`param${index}`, item[col]);
+      Object.keys(item).forEach((col, i) => {
+        request.input(`p${i}`, item[col]);
       });
 
       await request.query(query);
     }
 
     await transaction.commit();
-    console.log(`✅ Batch inserted into ${tableName}`);
+    console.log(`✅ Inserted batch into ${tableName} (${batch.length} records)`);
   } catch (error) {
+    await transaction.rollback();
     console.error(`❌ Error inserting batch into ${tableName}:`, error);
     throw error;
+  } finally {
+    pool.close();
   }
 }
 
 async function migrateAllCollections() {
   for (const { collection, table } of migrationOrder) {
-    console.log(`🔄 Starting migration for collection: ${collection} -> table: ${table}`);
-    try {
-      await migrateCollection(collection, table);
-    } catch (error) {
-      console.error(`❌ Migration failed for ${collection}:`, error);
-    }
+    console.log(`🔄 Starting migration: ${collection} -> ${table}`);
+    await migrateCollection(collection, table);
   }
   console.log('🎉 All collections migrated successfully!');
 }
@@ -614,7 +514,7 @@ async function main() {
   } catch (error) {
     console.error('❌ Migration process failed:', error);
   } finally {
-    sql.close();
+    await sql.close();
   }
 }
 
